@@ -1,11 +1,12 @@
 import tkinter as tk
+from typing import Optional
 
 
 class RoundedButton(tk.Canvas):
     def __init__(
         self,
         parent,
-        text,
+        text="",
         command=None,
         bg_color="#000000",
         fg_color="#FFFFFF",
@@ -13,6 +14,8 @@ class RoundedButton(tk.Canvas):
         height=50,
         corner_radius=20,
         dot=False,
+        font=None,
+        image: Optional[tk.PhotoImage] = None,
     ):
         tk.Canvas.__init__(
             self,
@@ -29,6 +32,11 @@ class RoundedButton(tk.Canvas):
         self.corner_radius = corner_radius
         self.text = text
         self.dot = dot
+        self.state = "normal"
+        self.label_font = (
+            font if font is not None else ("Arial", 10, "bold")
+        )
+        self._photo_image: Optional[tk.PhotoImage] = image
 
         # Draw the button
         self.draw_button()
@@ -42,7 +50,12 @@ class RoundedButton(tk.Canvas):
         self.delete("all")
 
         # Slightly lighter color on hover
-        current_bg = self._adjust_color(self.bg_color, 30) if hover else self.bg_color
+        if self.state == "disabled":
+            current_bg = "#C7C7C7"
+            current_fg = "#7A7A7A"
+        else:
+            current_bg = self._adjust_color(self.bg_color, 30) if hover else self.bg_color
+            current_fg = self.fg_color
 
         # Draw rounded rectangle
         width = self.winfo_reqwidth()
@@ -92,15 +105,22 @@ class RoundedButton(tk.Canvas):
                 outline="#8B0000",
             )
 
-        # Draw text
-        text_x = width // 2 + 5 if self.dot else width // 2
-        self.create_text(
-            text_x,
-            height // 2,
-            text=self.text,
-            fill=self.fg_color,
-            font=("Arial", 10, "bold"),
-        )
+        # Icon (centered); keep a reference so Tk does not GC the PhotoImage
+        if self._photo_image is not None:
+            self.create_image(
+                width // 2,
+                height // 2,
+                image=self._photo_image,
+            )
+        elif self.text:
+            text_x = width // 2 + 5 if self.dot else width // 2
+            self.create_text(
+                text_x,
+                height // 2,
+                text=self.text,
+                fill=current_fg,
+                font=self.label_font,
+            )
 
     def _adjust_color(self, color, amount):
         """Lighten a hex color by amount"""
@@ -110,10 +130,14 @@ class RoundedButton(tk.Canvas):
         return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
 
     def _on_click(self, event):
+        if self.state == "disabled":
+            return
         if self.command:
             self.command()
 
     def _on_enter(self, event):
+        if self.state == "disabled":
+            return
         self.draw_button(hover=True)
 
     def _on_leave(self, event):
@@ -129,9 +153,18 @@ class RoundedButton(tk.Canvas):
             self.fg_color = kwargs["fg_color"]
         if "dot" in kwargs:
             self.dot = kwargs["dot"]
+        if "state" in kwargs:
+            self.state = kwargs["state"]
+        if "font" in kwargs:
+            self.label_font = kwargs["font"]
+        if "image" in kwargs:
+            self._photo_image = kwargs["image"]
 
         # Redraw the button with new settings
         self.draw_button()
+
+    def set_state(self, state: str) -> None:
+        self.update_button(state=state)
 
     config = update_button
     configure = update_button

@@ -1,8 +1,12 @@
+import json
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from helvox.utils.platform import app_font
+from helvox.ui.tooltip import add_tooltip
+from helvox.utils.config_paths import portable_config_file, user_config_file
+from helvox.utils.data import validate_samples_for_dialect
+from helvox.utils.platform import app_font, recordings_dir
 from helvox.utils.recorder import Recorder
 
 
@@ -14,15 +18,11 @@ class SettingsDialog:
         # Create modal dialog
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Settings")
-        self.dialog.geometry("650x550")
-        self.dialog.resizable(False, False)
+        self.dialog.geometry("650x580")
+        self.dialog.minsize(650, 580)
+        self.dialog.resizable(True, True)
 
-        # Make it modal
         self.dialog.transient(parent)
-        self.dialog.grab_set()
-
-        # Center the dialog
-        self.center_dialog(parent)
 
         # Set app icon
         icon_path = Path(__file__).parent.parent / "resources" / "icons" / "app.png"
@@ -33,6 +33,12 @@ class SettingsDialog:
         # Configure style
         self.setup_styles()
         self.setup_ui()
+
+        # Center after content exists; grab only once the window is viewable
+        self.center_dialog(parent)
+        self.dialog.update_idletasks()
+        self.dialog.wait_visibility()
+        self.dialog.grab_set()
 
         # Handle window close button
         self.dialog.protocol("WM_DELETE_WINDOW", self.on_cancel)
@@ -144,23 +150,19 @@ class SettingsDialog:
         file_display_frame.columnconfigure(0, weight=1)
 
         self.file_var = tk.StringVar(value=str(self.recorder.input_file))
-        folder_label = ttk.Label(
+        self.file_input = ttk.Entry(
             file_display_frame,
             textvariable=self.file_var,
-            wraplength=500,
-            relief="sunken",
-            background="white",
-            foreground="#333",
             font=app_font(9),
-            padding=5,
+            width=60,
         )
-        folder_label.grid(row=0, column=0, sticky="ew")
+        self.file_input.grid(row=0, column=0, sticky="ew")
 
         # Browse button
-        browse_file_btn = ttk.Button(
+        self.browse_file_btn = ttk.Button(
             file_frame, text="Browse...", command=self.select_file, width=12
         )
-        browse_file_btn.grid(row=0, column=1, pady=(0, 0), sticky="e")
+        self.browse_file_btn.grid(row=0, column=1, pady=(0, 0), sticky="e")
 
         # Info label
         info_label = ttk.Label(
@@ -170,42 +172,65 @@ class SettingsDialog:
         )
         info_label.grid(row=1, column=0, sticky="w", pady=(5, 0))
 
-        # Output Folder Selection
-        folder_frame = ttk.LabelFrame(tab_data, text="Output Folder", padding="15")
-        folder_frame.grid(row=1, column=0, sticky="ew", padx=(10, 10), pady=(10, 0))
-        folder_frame.columnconfigure(0, weight=1)
-
-        # Folder path display
-        folder_display_frame = ttk.Frame(folder_frame)
-        folder_display_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        folder_display_frame.columnconfigure(0, weight=1)
+        # Output / recordings folder — only shown/editable in non-portable mode
+        rec_frame = ttk.LabelFrame(tab_data, text="Output folder (recordings)", padding="15")
+        rec_frame.grid(row=1, column=0, sticky="ew", padx=(10, 10), pady=(10, 0))
+        rec_frame.columnconfigure(0, weight=1)
 
         self.folder_var = tk.StringVar(value=str(self.recorder.output_folder))
-        folder_label = ttk.Label(
-            folder_display_frame,
+        self.folder_input = ttk.Entry(
+            rec_frame,
             textvariable=self.folder_var,
-            wraplength=500,
-            relief="sunken",
-            background="white",
-            foreground="#333",
             font=app_font(9),
-            padding=5,
+            width=60,
         )
-        folder_label.grid(row=0, column=0, sticky="ew")
+        self.folder_input.grid(row=0, column=0, sticky="ew")
 
-        # Browse button
-        browse_btn = ttk.Button(
-            folder_frame, text="Browse...", command=self.select_folder, width=12
+        self.browse_out_btn = ttk.Button(
+            rec_frame, text="Browse...", command=self.select_output_folder, width=12
         )
-        browse_btn.grid(row=0, column=1, pady=(0, 0), sticky="e")
+        self.browse_out_btn.grid(row=0, column=1, pady=(0, 0), sticky="e")
 
-        # Info label
-        info_label = ttk.Label(
-            folder_frame,
-            text="Select the folder where the audio recordings should be saved",
+        self.folder_info_label = ttk.Label(
+            rec_frame,
+            text="",
             style="Info.TLabel",
+            wraplength=560,
         )
-        info_label.grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.folder_info_label.grid(row=1, column=0, sticky="w", pady=(5, 0))
+
+        # Portable mode
+        settings_store_frame = ttk.LabelFrame(
+            tab_data, text="Portable mode", padding="15"
+        )
+        settings_store_frame.grid(row=2, column=0, sticky="ew", padx=(10, 10), pady=(10, 0))
+        settings_store_frame.columnconfigure(0, weight=1)
+
+        self.config_portable_var = tk.BooleanVar(value=self.recorder.config_portable)
+        portable_check = ttk.Checkbutton(
+            settings_store_frame,
+            text="Portable — store config and recordings in helvox/ next to the app",
+            variable=self.config_portable_var,
+            command=self.on_config_portable_toggle,
+        )
+        portable_check.grid(row=0, column=0, sticky="w")
+
+        self.config_path_label = ttk.Label(
+            settings_store_frame, text="", style="Info.TLabel", wraplength=560
+        )
+        self.config_path_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        options_frame = ttk.LabelFrame(tab_data, text="Options", padding="15")
+        options_frame.grid(row=3, column=0, sticky="ew", padx=(10, 10), pady=(10, 0))
+        options_frame.columnconfigure(0, weight=1)
+
+        self.enable_skip_var = tk.BooleanVar(value=self.recorder.enable_skip)
+        enable_skip_check = ttk.Checkbutton(
+            options_frame,
+            text="Enable Skip button",
+            variable=self.enable_skip_var,
+        )
+        enable_skip_check.grid(row=0, column=0, sticky="w")
 
         # Audio Device Selection
         device_frame = ttk.LabelFrame(
@@ -273,22 +298,99 @@ class SettingsDialog:
         # Set focus to OK button
         ok_btn.focus_set()
 
-    def select_folder(self) -> None:
-        """Open folder selection dialog."""
+        add_tooltip(
+            self.speaker_input,
+            "Your speaker ID (e.g. name, short name, nickname, or whatever).",
+        )
+        add_tooltip(
+            self.speaker_dialect,
+            "Your spoken dialect.",
+        )
+        add_tooltip(
+            self.file_input,
+            "Input JSON with the lines to record.",
+        )
+        add_tooltip(self.browse_file_btn, "Choose the input JSON file.")
+        add_tooltip(
+            self.folder_input,
+            "Where FLAC and output.json are stored (default: helvox next to the app).",
+        )
+        add_tooltip(self.browse_out_btn, "Choose output folder.")
+        add_tooltip(
+            portable_check,
+            "Checked: config in helvox next to the exe, with portable input/output paths when possible. Unchecked: OS user config directory.",
+        )
+        add_tooltip(
+            enable_skip_check,
+            "Show the Skip button in the main window.",
+        )
+        add_tooltip(
+            self.device_combo,
+            "Audio input used for recording.",
+        )
+        add_tooltip(refresh_btn, "Reload audio devices.")
+        add_tooltip(cancel_btn, "Close without saving changes.")
+        add_tooltip(ok_btn, "Save and apply these settings.")
+
+        self.on_config_portable_toggle()
+
+    def on_config_portable_toggle(self) -> None:
+        is_portable = self.config_portable_var.get()
+
+        if is_portable:
+            # Lock output folder to helvox/ next to the app.
+            base = recordings_dir()
+            self.folder_var.set(str(base))
+            self.folder_input.configure(state="disabled")
+            self.browse_out_btn.configure(state="disabled")
+            self.folder_info_label.configure(
+                text=f"Locked to: {base}  (recordings go in <speaker>/ inside)"
+            )
+            self.config_path_label.configure(
+                text=f"Config:  {portable_config_file()}\n"
+                     f"Recordings:  {base / '<speaker_id>'}"
+            )
+        else:
+            self.folder_input.configure(state="normal")
+            self.browse_out_btn.configure(state="normal")
+            self.folder_info_label.configure(text="")
+            self.config_path_label.configure(
+                text=f"Config will be saved to: {user_config_file()}"
+            )
+
+        self.file_input.configure(state="normal")
+        self.browse_file_btn.configure(state="normal")
+
+    def select_output_folder(self) -> None:
+        raw = self.folder_var.get().strip() or str(recordings_dir())
+        initial = Path(raw)
+        base = initial if initial.is_dir() else initial.parent
+        while not base.exists() and base != base.parent:
+            base = base.parent
+        initialdir = str(base if base.exists() else Path.home())
         folder = filedialog.askdirectory(
-            title="Select Output Folder", initialdir=self.recorder.output_folder
+            title="Select Output Folder", initialdir=initialdir
         )
         if folder:
             self.folder_var.set(str(Path(folder)))
 
     def select_file(self) -> None:
+        current = Path(self.file_var.get().strip())
+        if current.is_file():
+            initialdir = str(current.parent)
+        elif current.is_dir():
+            initialdir = str(current)
+        else:
+            initialdir = str(Path.home())
+
         file = filedialog.askopenfilename(
-            title="Select Input File", filetypes=[("JSON files", "*.json")]
+            title="Select Input File",
+            initialdir=initialdir,
+            filetypes=[("JSON files", "*.json")],
         )
 
         if file:
             self.file_var.set(str(Path(file)))
-            self.recorder.input_file = file
 
     def refresh_devices(self) -> None:
         """Refresh available audio devices."""
@@ -314,11 +416,13 @@ class SettingsDialog:
             self.speaker_input.focus_set()
             return False
 
-        folder_path = Path(self.folder_var.get())
-        if not folder_path.exists():
+        out = Path(self.folder_var.get().strip() or str(recordings_dir()))
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
             messagebox.showwarning(
-                "Invalid Folder",
-                "The selected output folder does not exist.",
+                "Output folder",
+                f"Cannot create or use this folder:\n{e}",
                 parent=self.dialog,
             )
             return False
@@ -332,6 +436,40 @@ class SettingsDialog:
             self.device_combo.focus_set()
             return False
 
+        input_path = Path(self.file_var.get())
+        if not input_path.exists():
+            messagebox.showwarning(
+                "Invalid Input File",
+                "The selected input JSON file does not exist.",
+                parent=self.dialog,
+            )
+            return False
+
+        try:
+            with open(input_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            messagebox.showwarning(
+                "Invalid Input File",
+                f"Could not read JSON: {e}",
+                parent=self.dialog,
+            )
+            return False
+
+        if not isinstance(data, list):
+            messagebox.showwarning(
+                "Invalid Input File",
+                "The input file must be a JSON array of objects.",
+                parent=self.dialog,
+            )
+            return False
+
+        dialect = self.dialect_var.get()
+        err = validate_samples_for_dialect(data, dialect)
+        if err:
+            messagebox.showwarning("Invalid Input File", err, parent=self.dialog)
+            return False
+
         return True
 
     def on_ok(self) -> None:
@@ -339,11 +477,20 @@ class SettingsDialog:
         if not self.validate_inputs():
             return
 
+        is_portable = self.config_portable_var.get()
+        # In portable mode the output folder is always recordings_dir() — locked.
+        out_folder = (
+            str(recordings_dir())
+            if is_portable
+            else self.folder_var.get().strip() or str(recordings_dir())
+        )
         self.result = {
             "speaker_id": self.speaker_var.get().strip(),
             "speaker_dialect": self.dialect_var.get(),
-            "output_folder": self.folder_var.get(),
+            "output_folder": out_folder,
+            "config_portable": is_portable,
             "device": self.device_var.get(),
+            "enable_skip": self.enable_skip_var.get(),
             "input_file": self.file_var.get(),
         }
         self.dialog.destroy()

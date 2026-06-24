@@ -1,0 +1,38 @@
+[
+    {
+        "id": "bb9ebca5-09b3-4cad-bad3-65d7f9969589",
+        "de": "Hallo Welt.",
+        "ch_ag": "Hallo 1Wält.",
+        "ch_be": "Hallo Wäut."
+    },
+    {
+        "id": "6f971113-eac5-4279-a6bb-da736384e9b0",
+        "de": "Ich war heute draussen.",
+        "ch_ag": "Ich bi 1hüt dusse gsi.",
+        "ch_be": "I bi hüt dussä gsi"
+    },
+    {
+        "id": "bb9ebca15-09b3-4cad-bad3-65d7f9969589",
+        "de": "Hallo Welt.",
+        "ch_ag": "Hallo 2Wält.",
+        "ch_be": "Hallo Wäut."
+    },
+    {
+        "id": "6f971113-eac5-4279-a6bb-da7363834e9b0",
+        "de": "Ich war heute draussen.",
+        "ch_ag": "Ich bi 2hüt dusse gsi.",
+        "ch_be": "I bi hüt dussä gsi"
+    },
+    {
+        "id": "bb9ebca513-09b3-4cad-bad3-65d7f9969589",
+        "de": "Hallo Welt.",
+        "ch_ag": "Hallo 3Wält.",
+        "ch_be": "Hallo Wäut."
+    },
+    {
+        "id": "6f971113-eac5-4279-a6bb-da712336384e9b0",
+        "de": "Ich war heute draussen.",
+        "ch_ag": "Ich bi 4hüt dusse gsi.",
+        "ch_be": "I bi hüt dussä gsi"
+    }
+]

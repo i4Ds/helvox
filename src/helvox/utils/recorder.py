@@ -1,14 +1,16 @@
-import configparser
 import json
+from configparser import ConfigParser
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 from sounddevice import CallbackFlags
 
+from helvox.utils.config_paths import decode_portable_path, encode_portable_path
 from helvox.utils.data import read_dataset
+from helvox.utils.platform import recordings_dir
 from helvox.utils.trim import trim_silence
 
 
@@ -36,7 +38,9 @@ class Recorder:
         self.selected_device = ""
         self.speaker_id = "unknown"
         self.speaker_dialect = "AG"
+        self.enable_skip = False
         self.input_file = ""
+        self.config_portable = False
         self.output_file = ""
         self.skipped_file = ""
 
@@ -48,6 +52,8 @@ class Recorder:
 
         self.open_ids = []
         self.total_duration = 0
+        # Last focused sample id (persisted in config.json) for restore on restart.
+        self.current_track: str | None = None
 
     def get_audio_devices(self) -> dict:
         devices = sd.query_devices()
@@ -133,6 +139,8 @@ class Recorder:
 
         self.recording = True
         self.audio_data = []
+        self.full_audio = None
+        self.trimmed_audio = None
 
         def callback(indata: np.ndarray, frames, time, status: CallbackFlags):
             if status:
@@ -180,6 +188,41 @@ class Recorder:
         sf.write(audio_path, self.trimmed_audio, self.sample_rate, format="FLAC")
 
         return self.get_duration_trimmed_audio()
+
+    def load_saved_clip_for_sample(self, sample_id: Union[int, str]) -> None:
+        """Load trimmed FLAC from disk when this line was saved; else clear buffers."""
+        id_str = str(sample_id)
+        self.audio_data = []
+
+        if id_str not in self.output_index:
+            self.full_audio = None
+            self.trimmed_audio = None
+            return
+
+        audio_name = self.output_index[id_str].get("audio", "")
+        if not audio_name:
+            self.full_audio = None
+            self.trimmed_audio = None
+            return
+
+        path = self.output_folder / self.speaker_id / "audio" / Path(audio_name).name
+        if not path.is_file():
+            self.full_audio = None
+            self.trimmed_audio = None
+            return
+
+        try:
+            data, _ = sf.read(str(path), always_2d=True, dtype="float32")
+        except OSError:
+            self.full_audio = None
+            self.trimmed_audio = None
+            return
+
+        if data.shape[1] > 1:
+            data = np.mean(data, axis=1, keepdims=True)
+
+        self.trimmed_audio = np.ascontiguousarray(data)
+        self.full_audio = self.trimmed_audio.copy()
 
     def play_audio_data_full_audio(self):
         self.play_audio_data(self.full_audio)
@@ -255,33 +298,98 @@ class Recorder:
         if not config_path.parent.exists():
             config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        config = configparser.ConfigParser()
-        config["Settings"] = {
-            "output_folder": str(self.output_folder),
+        output_folder = (
+            encode_portable_path(self.output_folder)
+            if self.config_portable
+            else str(Path(self.output_folder).expanduser().resolve())
+        )
+        input_file = (
+            encode_portable_path(self.input_file)
+            if self.config_portable and str(self.input_file).strip()
+            else str(Path(self.input_file).expanduser().resolve())
+            if str(self.input_file).strip()
+            else ""
+        )
+
+        payload = {
+            "config_portable": self.config_portable,
+            "output_folder": output_folder,
             "selected_device": self.selected_device,
             "speaker_id": self.speaker_id,
             "speaker_dialect": self.speaker_dialect,
-            "input_file": self.input_file,
+            "enable_skip": self.enable_skip,
+            "input_file": input_file,
+            "track": self.current_track,
         }
 
-        with open(config_path, "w") as configfile:
-            config.write(configfile)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    def load_settings(self, config_path: Path) -> None:
-        if not config_path.exists():
+    def _migrate_ini_to_dict(self, ini_path: Path) -> dict[str, object]:
+        config = ConfigParser()
+        config.read(ini_path)
+        settings = config["Settings"]
+        return {
+            "config_portable": settings.get("config_portable", "false").lower()
+            in ("1", "true", "yes", "on"),
+            "output_folder": settings.get("output_folder", str(self.output_folder)),
+            "selected_device": settings.get("selected_device", self.selected_device),
+            "speaker_id": settings.get("speaker_id", self.speaker_id),
+            "speaker_dialect": settings.get("speaker_dialect", self.speaker_dialect),
+            "enable_skip": settings.getboolean(
+                "enable_skip", fallback=self.enable_skip
+            ),
+            "input_file": settings.get("input_file", self.input_file),
+            "track": settings.get("track") or None,
+        }
+
+    def load_settings(
+        self,
+        config_path: Path,
+        *,
+        default_config_portable: bool | None = None,
+    ) -> None:
+        data = None
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            ini_path = config_path.with_suffix(".ini")
+            if ini_path.exists():
+                data = self._migrate_ini_to_dict(ini_path)
+
+        if not data:
             return
 
-        config = configparser.ConfigParser()
-        config.read(config_path)
+        if "config_portable" in data:
+            self.config_portable = bool(data["config_portable"])
+        elif default_config_portable is not None:
+            self.config_portable = default_config_portable
+        else:
+            self.config_portable = False
 
-        settings = config["Settings"]
-        self.output_folder = Path(
-            settings.get("output_folder", str(self.output_folder))
+        of = (data.get("output_folder") or "").strip()
+        self.output_folder = (
+            decode_portable_path(of) if of and self.config_portable else
+            Path(of).expanduser().resolve() if of else recordings_dir()
         )
-        self.selected_device = settings.get("selected_device", self.selected_device)
-        self.speaker_id = settings.get("speaker_id", self.speaker_id)
-        self.speaker_dialect = settings.get("speaker_dialect", self.speaker_dialect)
-        self.input_file = settings.get("input_file", self.input_file)
+        self.selected_device = data.get("selected_device", self.selected_device)
+        self.speaker_id = data.get("speaker_id", self.speaker_id)
+        self.speaker_dialect = data.get("speaker_dialect", self.speaker_dialect)
+        self.enable_skip = bool(data.get("enable_skip", self.enable_skip))
+        input_file = (data.get("input_file") or "").strip()
+        self.input_file = (
+            str(decode_portable_path(input_file))
+            if input_file and self.config_portable
+            else str(Path(input_file).expanduser().resolve())
+            if input_file
+            else ""
+        )
+        raw_track = data.get("track")
+        if raw_track is None or raw_track == "":
+            self.current_track = None
+        else:
+            self.current_track = str(raw_track)
 
         self.output_file = self.output_folder / self.speaker_id / "output.json"
         self.skipped_file = self.output_folder / self.speaker_id / "skipped.txt"
@@ -301,8 +409,28 @@ class Recorder:
                 and (idx not in self.skipped_ids)
             )
         ]
-
         self.total_duration = self.calc_total_duration()
+
+    def set_current_track_queue(self, current_id: str | None) -> None:
+        """Recompute ``open_ids`` so ``current_id`` is the active line (queue after a pop)."""
+        if not self.input_data:
+            self.open_ids = []
+            return
+        pending = [
+            str(s["id"])
+            for s in self.input_data
+            if str(s["id"]) not in self.output_index
+            and str(s["id"]) not in self.skipped_ids
+        ]
+        if not current_id:
+            self.open_ids = list(pending)
+            return
+        tid = str(current_id)
+        if tid in pending:
+            idx = pending.index(tid)
+            self.open_ids = pending[idx + 1 :]
+        else:
+            self.open_ids = list(pending)
 
     def calc_total_duration(self) -> float:
         return sum(
@@ -332,7 +460,9 @@ class Recorder:
     def load_skipped_ids(self) -> None:
         if len(str(self.skipped_file)) > 0 and Path(self.skipped_file).exists():
             with open(self.skipped_file, mode="r", encoding="utf-8") as f:
-                self.skipped_ids = [line.strip() for line in f.readlines()]
+                self.skipped_ids = [
+                    line.strip() for line in f.readlines() if line.strip()
+                ]
         else:
             self.skipped_ids = []
 
@@ -351,6 +481,23 @@ class Recorder:
         with open(self.skipped_file, mode="a", encoding="utf-8") as f:
             f.write(f"{id}\n")
 
+    def remove_skip(self, id: Union[int, str]) -> None:
+        id_str = str(id)
+        if id_str not in self.skipped_ids:
+            return
+        self.skipped_ids = [x for x in self.skipped_ids if str(x) != id_str]
+        self._write_skipped_file()
+
+    def _write_skipped_file(self) -> None:
+        if not self.skipped_file or len(str(self.skipped_file)) == 0:
+            return
+        parent = Path(self.skipped_file).parent
+        if not parent.exists():
+            parent.mkdir(parents=True, exist_ok=True)
+        with open(self.skipped_file, mode="w", encoding="utf-8") as f:
+            for x in self.skipped_ids:
+                f.write(f"{x}\n")
+
     def add_sample(
         self,
         id: str,
@@ -359,20 +506,32 @@ class Recorder:
         dialect: str,
         audio_path: str,
         duration_s: float,
+        thumb: str = "up",
     ) -> None:
-        sample = {
+        sample: dict[str, Any] = {
             "id": id,
             "de": text_de,
             "ch": text_ch,
             "dialect": dialect.lower(),
             "audio": audio_path,
             "duration_s": duration_s,
+            "thumb": thumb,
         }
 
-        self.output_data.append(sample)
+        id_str = str(id)
+        replaced = False
+        for i, row in enumerate(self.output_data):
+            if str(row.get("id")) == id_str:
+                self.output_data[i] = sample
+                replaced = True
+                break
+        if not replaced:
+            self.output_data.append(sample)
 
-        if not Path(self.skipped_file).parent.exists():
-            Path(self.skipped_file).parent.mkdir(parents=True, exist_ok=True)
+        self.output_index[id_str] = sample
+
+        if not Path(self.output_file).parent.exists():
+            Path(self.output_file).parent.mkdir(parents=True, exist_ok=True)
 
         with open(self.output_file, mode="w", encoding="utf-8") as f:
             json.dump(self.output_data, f, ensure_ascii=False, indent=4)
