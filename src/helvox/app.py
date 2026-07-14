@@ -14,7 +14,7 @@ from helvox.utils.config_paths import (
     resolve_startup_settings_path,
     user_config_file,
 )
-from helvox.utils.platform import app_font, recordings_dir
+from helvox.utils.platform import app_font, mono_font, recordings_dir
 from helvox.utils.recorder import Recorder
 
 
@@ -194,15 +194,22 @@ class App:
         recording_frame.grid(row=3, column=0, sticky="we", pady=5, padx=5)
 
         # Configure recording frame columns - column 2 expands
+        # Column 0 stays wide enough for the level label so the layout does not jump
+        recording_frame.columnconfigure(0, minsize=120)
         recording_frame.columnconfigure(2, weight=1)
 
         self.level_canvas = tk.Canvas(recording_frame, width=40, height=160, bg="black")
         self.level_canvas.grid(row=0, rowspan=4, column=0, sticky="ns", padx=5, pady=5)
 
-        self.level_text = tk.StringVar(value="Level: 0 dB")
-        ttk.Label(recording_frame, textvariable=self.level_text).grid(
-            row=4, column=0, sticky=tk.W, padx=5
-        )
+        self.level_text = tk.StringVar(value="Level: -60.0 dB")
+        # Monospace keeps "-1.2" and "-60.0" the same pixel width (no layout flicker)
+        ttk.Label(
+            recording_frame,
+            textvariable=self.level_text,
+            font=mono_font(10),
+            width=16,
+            anchor="w",
+        ).grid(row=4, column=0, sticky=tk.W, padx=5)
 
         self.waveform_canvas_full = RoundedCanvas(
             recording_frame, height=50, bg="black", corner_radius=20
@@ -212,7 +219,7 @@ class App:
         self.play_btn_full = RoundedButton(
             recording_frame,
             text="Preview",
-            command=self.recorder.play_audio_data_full_audio,
+            command=self._toggle_preview_full,
             bg_color="#10A560",
             fg_color="#FFFFFF",
             width=120,
@@ -235,7 +242,7 @@ class App:
         self.play_btn_trimmed = RoundedButton(
             recording_frame,
             text="Preview",
-            command=self.recorder.play_audio_data_trimmed_audio,
+            command=self._toggle_preview_trimmed,
             bg_color="#10A560",
             fg_color="#FFFFFF",
             width=120,
@@ -512,10 +519,10 @@ class App:
         )
 
     def update_level_meter(self) -> None:
-        level = self.recorder.get_current_level()
+        level = round(float(self.recorder.get_current_level()), 1)
 
-        # Update level text
-        self.level_text.set(f"Level: {level:.1f} dB")
+        # Fixed one-decimal width keeps the label from shifting as the level changes
+        self.level_text.set(f"Level: {level:5.1f} dB")
 
         # Get canvas dimensions
         width = self.level_canvas.winfo_width()
@@ -587,6 +594,8 @@ class App:
 
     def toggle_recording(self) -> None:
         if not self.recorder.recording:
+            self.recorder.stop_playback()
+            self._sync_preview_buttons()
             self.recorder.start_recording()
             self.clear_waveform_canvas()
             self.record_btn.config(
@@ -596,6 +605,41 @@ class App:
             self.recorder.stop_recording()
             self.record_btn.config(text="REC", bg_color="#000000", dot=True)  # Black
             self.update_waveform()
+
+    def _toggle_preview_full(self) -> None:
+        self.recorder.play_audio_data_full_audio()
+        self._sync_preview_buttons()
+        self._schedule_preview_watch()
+
+    def _toggle_preview_trimmed(self) -> None:
+        self.recorder.play_audio_data_trimmed_audio()
+        self._sync_preview_buttons()
+        self._schedule_preview_watch()
+
+    def _sync_preview_buttons(self) -> None:
+        source = self.recorder.get_playback_source()
+        idle = "#10A560"
+        playing = "#8B0000"
+        self.play_btn_full.config(
+            bg_color=playing if source == "full" else idle
+        )
+        self.play_btn_trimmed.config(
+            bg_color=playing if source == "trimmed" else idle
+        )
+
+    def _schedule_preview_watch(self) -> None:
+        watch_id = getattr(self, "_preview_watch_id", None)
+        if watch_id is not None:
+            self.root.after_cancel(watch_id)
+            self._preview_watch_id = None
+        if self.recorder.get_playback_source() is not None:
+            self._preview_watch_id = self.root.after(100, self._watch_preview)
+
+    def _watch_preview(self) -> None:
+        self._preview_watch_id = None
+        self._sync_preview_buttons()
+        if self.recorder.get_playback_source() is not None:
+            self._preview_watch_id = self.root.after(100, self._watch_preview)
 
     def clear_waveform_canvas(self) -> None:
         self.waveform_canvas_full.delete("all")
@@ -884,6 +928,7 @@ class App:
 
     def on_closing(self) -> None:
         self._persist_settings()
+        self.recorder.stop_playback()
         self.recorder.stop_monitoring()
         if self.recorder.recording:
             self.recorder.stop_recording()

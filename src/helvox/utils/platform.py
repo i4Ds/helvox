@@ -25,6 +25,20 @@ def app_font(size: int, *, bold: bool = False) -> tuple[str, int] | tuple[str, i
     return (family, size)
 
 
+def mono_font(size: int) -> tuple[str, int]:
+    """Monospace font so numeric labels keep a stable pixel width."""
+    system = platform.system()
+
+    if system == "Windows":
+        family = "Consolas"
+    elif system == "Darwin":
+        family = "Menlo"
+    else:
+        family = "DejaVu Sans Mono"
+
+    return (family, size)
+
+
 def _in_temp_dir(path: Path) -> bool:
     """Return True if *path* is inside the system temporary directory."""
     try:

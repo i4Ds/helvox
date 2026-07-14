@@ -31,6 +31,7 @@ class Recorder:
         self.current_level = -60.0  # dB
         self.full_audio = None
         self.trimmed_audio = None
+        self._playback_source: Optional[str] = None
 
         self.monitor_stream = None
         self.stream = None
@@ -81,7 +82,7 @@ class Recorder:
         else:
             db = -60.0
 
-        return max(-60.0, min(0.0, db))
+        return round(max(-60.0, min(0.0, float(db))), 1)
 
     def start_monitoring(self) -> None:
         if self.monitoring:
@@ -224,18 +225,44 @@ class Recorder:
         self.trimmed_audio = np.ascontiguousarray(data)
         self.full_audio = self.trimmed_audio.copy()
 
-    def play_audio_data_full_audio(self):
-        self.play_audio_data(self.full_audio)
+    def play_audio_data_full_audio(self) -> bool:
+        return self.play_audio_data(self.full_audio, source="full")
 
-    def play_audio_data_trimmed_audio(self):
-        self.play_audio_data(self.trimmed_audio)
+    def play_audio_data_trimmed_audio(self) -> bool:
+        return self.play_audio_data(self.trimmed_audio, source="trimmed")
 
-    def play_audio_data(self, audio):
-        if audio is not None:
-            sd.play(audio, self.sample_rate)
+    def play_audio_data(self, audio, source: str) -> bool:
+        """Toggle playback for ``source``. Returns True if playback started."""
+        if audio is None:
+            return False
+
+        if self._playback_source == source and self.check_playback():
+            self.stop_playback()
+            return False
+
+        sd.play(audio, self.sample_rate)
+        self._playback_source = source
+        return True
+
+    def stop_playback(self) -> None:
+        try:
+            sd.stop()
+        except Exception:
+            pass
+        self._playback_source = None
 
     def check_playback(self) -> bool:
-        return sd.get_stream().active
+        try:
+            stream = sd.get_stream()
+            return stream is not None and bool(stream.active)
+        except Exception:
+            return False
+
+    def get_playback_source(self) -> Optional[str]:
+        if not self.check_playback():
+            self._playback_source = None
+            return None
+        return self._playback_source
 
     def get_duration_full_audio(self) -> float:
         return self.get_duration(self.full_audio)
